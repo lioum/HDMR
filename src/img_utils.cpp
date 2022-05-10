@@ -23,7 +23,7 @@ MatrixXd load_image(const char *filename)
             double g = bytes[i * 3 * width + 3 * j + 1];
             double b = bytes[i * 3 * width + 3 * j + 2];
 
-            mat(i, j) = (r + g + b) / 3.0;
+            mat(i, j) = 0.299 * r + 0.587 * g + 0.114 * b;
         }
     }
 
