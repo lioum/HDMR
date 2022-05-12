@@ -4,19 +4,13 @@ import numpy as np
 import subprocess
 import matplotlib.pyplot as plt
 
-from hdmr_viewer.harris import compute_harris_response
+from hdmr_viewer.harris import detect_harris_points
 
-def run_binary(bin_path: str, img_path: str) -> tuple[np.ndarray, np.ndarray]:
+def run_binary(bin_path: str, img_path: str) -> np.ndarray:
     result = subprocess.run([bin_path, img_path], capture_output=True, text=True)
-    indices = np.array([tuple(int(i) for i in line.split(",")) for line in result.stdout.splitlines()], dtype=int)
+    indices = np.array([tuple(int(i) for i in line.split(",")[:2]) for line in result.stdout.splitlines()], dtype=int)
 
-    return indices[:, 0], indices[:, 1]
-
-def ref_harris_points(img_gray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    harris_response = compute_harris_response(img_gray)
-    coord_flatten = np.argsort(-harris_response, axis=None)[:2000]
-
-    return coord_flatten // img_gray.shape[1], coord_flatten % img_gray.shape[1]
+    return indices
 
 def main():
     if len(sys.argv) < 2:
@@ -24,15 +18,18 @@ def main():
 
     img_path = sys.argv[1]
 
+    nb_points = 25
+    if len(sys.argv) > 2:
+        nb_points = int(sys.argv[2]) or nb_points
+
     img = cv.cvtColor(cv.imread(img_path), cv.COLOR_BGR2RGB)
 
-    py_y, py_x = ref_harris_points(cv.cvtColor(img, cv.COLOR_RGB2GRAY))
-    cpu_y, cpu_x = run_binary('build/hdmr', img_path)
+    cpu = run_binary("build/hdmr", img_path)
+    python = detect_harris_points(cv.cvtColor(img, cv.COLOR_RGB2GRAY), max_keypoints=nb_points)
     
-    img[py_y, py_x] = [0, 255, 0]
-    img[cpu_y, cpu_x] = [0, 255, 255]
-
     plt.imshow(img)
+    plt.scatter(python[:nb_points,1], python[:nb_points, 0], s=6, c='red', alpha=0.5)
+    plt.scatter(cpu[:nb_points, 1], cpu[:nb_points, 0], s=6, c='cyan', alpha=0.5)
     plt.show()
 
 if __name__ == "__main__":
