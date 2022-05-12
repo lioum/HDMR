@@ -2,6 +2,7 @@
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#include <cub/cub.cuh> 
 
 __global__ void grayscale(unsigned char *src, float *dst, int height, int width)
 {
@@ -105,7 +106,68 @@ __global__ void compute_response(float *Wxx, float *Wyy, float *Wxy, float *dst,
     dst[i] = Wdet / (Wtr + 1);
 }
 
-void compute_harris_response(const unsigned char *img_rgb, float *harris_response, int width,
+__global__ void thresh_harris(float *d_harris_response, float *d_min_coef,
+                              float *d_max_coef, float threshold, size_t size)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x < 0 || x >= size)
+        return;
+
+    d_harris_response[x] = d_harris_response[x] * (d_harris_response[x]
+        > (*d_min_coef + threshold * (*d_max_coef - *d_min_coef)));
+}
+
+__global__ void init_indices(int *d_indices, size_t size)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x < 0 || x >= size)
+        return;
+
+    d_indices[x] = x;
+}
+
+__device__ bool is_close(double a, double b, double rtol = 1e-5, double atol = 1e-8)
+{
+    return abs(a - b) <= (atol + rtol * abs(b));
+}
+
+__global__ void get_local_maximums(float *mat, float *dst, int height, int width)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (x >= width || y >= height)
+        return;
+    
+    int block_i = y - (y > 0);
+    int block_j = x - (x > 0);
+    int block_h = 1 + (y > 0) + (y < height - 1);
+    int block_w = 1 + (x > 0) + (x < width - 1);
+
+    float max = 0;
+    for (int i = block_i; i < block_i + block_h; i++)
+    {
+        for (int j = block_j; j < block_j + block_w; j++)
+        {
+            if (max <= mat[i * width + j])
+                max = mat[i * width + j];
+        }
+    }
+    dst[y * width + x] = max * is_close(mat[y * width + x], max);
+}
+
+__global__ void compute_coords(int *sorted_indices, int *d_x_coords, int *d_y_coords, int width, size_t nb_keypoints)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (x >= nb_keypoints)
+        return;
+
+    d_y_coords[x] = sorted_indices[x] / width;
+    d_x_coords[x] = sorted_indices[x] % width;
+}
+
+void compute_harris_response(const unsigned char *img_rgb, float *d_harris_response, int width,
                           int height, size_t derivative_ker_size,
                           size_t opening_size)
 {
@@ -187,11 +249,9 @@ void compute_harris_response(const unsigned char *img_rgb, float *harris_respons
     cudaDeviceSynchronize();
 
     compute_response<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(
-        d_Wxx, d_Wyy, d_Wxy, d_response, size);
+        d_Wxx, d_Wyy, d_Wxy, d_harris_response, size);
 
     cudaDeviceSynchronize();
-
-    cudaMemcpy(harris_response, d_response, size * sizeof(float), cudaMemcpyDeviceToHost);
 
     cudaFree(d_img_gray);
     cudaFree(d_img_rgb);
@@ -207,8 +267,104 @@ void compute_harris_response(const unsigned char *img_rgb, float *harris_respons
     cudaFree(d_Wxx);
     cudaFree(d_Wyy);
     cudaFree(d_Wxy);
+}
+
+void detect_harris_points(const unsigned char *img_rgb, int *x_coords,
+                          int *y_coords, float *cornerness, float threshold,
+                          int width, int height, size_t derivative_ker_size,
+                          size_t opening_size, size_t nb_keypoints)
+{
+    size_t size = width * height;
+    dim3 threads(32,32);
+    int nb_threads = threads.x * threads.y;
+    dim3 blocks((width+threads.x-1)/threads.x,
+                (height+threads.y-1)/threads.y);   
+
+    float *d_harris_response;
+    cudaMalloc(&d_harris_response, size * sizeof(float));
+
+    compute_harris_response(img_rgb, d_harris_response, width, height,
+                            derivative_ker_size, opening_size);
+
+    float *d_min_coef, *d_max_coef;
+    cudaMalloc(&d_min_coef, sizeof(float));
+    cudaMalloc(&d_max_coef, sizeof(float));
+
+    void     *d_temp_storage = NULL;
+    size_t   temp_storage_bytes = 0; 
+    cub::DeviceReduce::Min(d_temp_storage, temp_storage_bytes,
+                           d_harris_response, d_min_coef, size);
+    cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    cub::DeviceReduce::Min(d_temp_storage, temp_storage_bytes,
+                           d_harris_response, d_min_coef, size);
     
-    cudaFree(d_response);
+    d_temp_storage = NULL;
+    temp_storage_bytes = 0;
+    cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes,
+                           d_harris_response, d_max_coef, size);
+    cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes,
+                           d_harris_response, d_max_coef, size);
+
+    cudaDeviceSynchronize();
+
+    thresh_harris<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(
+        d_harris_response, d_min_coef, d_max_coef, threshold, size);
+    
+    cudaDeviceSynchronize();
+ 
+    int *d_indices, *d_sorted_indices;
+    cudaMalloc(&d_indices, size * sizeof(int));
+    cudaMalloc(&d_sorted_indices, size * sizeof(int));
+    init_indices<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(d_indices, size);
+
+    float *d_local_maxs, *d_sorted_maxs;
+    cudaMalloc(&d_local_maxs, size * sizeof(float));
+    cudaMalloc(&d_sorted_maxs, size * sizeof(float));
+
+    get_local_maximums<<<blocks, threads>>>(d_harris_response, d_local_maxs, height, width);
+
+    cudaDeviceSynchronize();
+    cudaFree(d_harris_response);
+    cudaFree(d_min_coef);
+    cudaFree(d_max_coef);
+
+    d_temp_storage = NULL;
+    temp_storage_bytes = 0;
+    cub::DeviceRadixSort::SortPairsDescending(
+        d_temp_storage, temp_storage_bytes, d_local_maxs, d_sorted_maxs,
+        d_indices, d_sorted_indices, size);
+
+    cudaMalloc(&d_temp_storage, temp_storage_bytes);
+    cub::DeviceRadixSort::SortPairsDescending(
+        d_temp_storage, temp_storage_bytes, d_local_maxs, d_sorted_maxs,
+        d_indices, d_sorted_indices, size);
+    
+    cudaDeviceSynchronize();
+
+    int *d_x_coords, *d_y_coords;
+    cudaMalloc(&d_x_coords, nb_keypoints * sizeof(int));
+    cudaMalloc(&d_y_coords, nb_keypoints * sizeof(int));
+
+    compute_coords<<<(nb_threads + nb_keypoints - 1) / nb_threads,
+                     nb_threads>>>(d_sorted_indices, d_x_coords, d_y_coords,
+                                   width, nb_keypoints);
+
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(x_coords, d_x_coords, nb_keypoints * sizeof(int),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(y_coords, d_y_coords, nb_keypoints * sizeof(int),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(cornerness, d_sorted_maxs, nb_keypoints * sizeof(float),
+               cudaMemcpyDeviceToHost);
+
+    cudaFree(d_indices);
+    cudaFree(d_sorted_indices);
+
+    cudaFree(d_local_maxs);
+    cudaFree(d_sorted_maxs);
+    cudaFree(d_temp_storage);
 }
 
 int main(int argc, char *argv[])
@@ -219,32 +375,26 @@ int main(int argc, char *argv[])
     int width, height, bpp;
     auto img = stbi_load(argv[1], &width, &height, &bpp, 3);
     
-    float *harris_response = new float[width * height];
+    size_t nb_keypoints = 2000;
+    int *x_coords = new int[nb_keypoints];
+    int *y_coords = new int[nb_keypoints];
+    float *cornerness = new float[nb_keypoints];
 
-    compute_harris_response(img, harris_response, width, height, 3, 3);
+    detect_harris_points(img, x_coords, y_coords, cornerness, 0.1, width, height,
+                         3, 3, nb_keypoints);
 
     stbi_image_free(img);
 
-    float max = 0;
-    for (int i = 0; i < width * height; i++)
+    for (int i = 0; i < nb_keypoints; i++)
     {
-        if (harris_response[i] > max)
-            max = harris_response[i];
+        if (cornerness[i] == 0)
+            break;
+        std::cout << y_coords[i] << ", " << x_coords[i] << std::endl;
     }
-
-    unsigned char *rgb_gray = new uint8_t[3 * width * height];
-    for (int i = 0; i < width * height; i++)
-    {
-        float value = 255 * harris_response[i] / max;
-        rgb_gray[i * 3] = value;
-        rgb_gray[i * 3 + 1] = value;
-        rgb_gray[i * 3 + 2] = value;
-    }
-
-    stbi_write_png("harris_response.png", width, height, 3, rgb_gray, 3 * width);
     
-    delete[] harris_response;
-    delete[] rgb_gray;
+    delete[] x_coords;
+    delete[] y_coords;
+    delete[] cornerness;
 
     return 0;
 }
