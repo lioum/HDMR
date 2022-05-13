@@ -1,8 +1,7 @@
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
 #include <cub/cub.cuh> 
+
+#include "stb_image.h"
+#include "stb_image_write.h"
 
 __global__ void grayscale(unsigned char *src, float *dst, int height, int width)
 {
@@ -207,8 +206,8 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
     dim3 blocks_opening((x_opening_size + threads.x - 1) / threads.x,
                         (x_opening_size + threads.y - 1) / threads.y);
     dim3 blocks_derivative_ker(
-        ((x_derivative_ker_size + threads.x - 1) / threads.x,
-         (x_derivative_ker_size + threads.y - 1) / threads.y));
+        (x_derivative_ker_size + threads.x - 1) / threads.x,
+        (x_derivative_ker_size + threads.y - 1) / threads.y);
 
     float opening_sigma_sqr = (opening_size * opening_size) / 9.0;
     float derivative_sigma_sqr =
@@ -385,7 +384,7 @@ int main(int argc, char *argv[])
 
     stbi_image_free(img);
 
-    for (int i = 0; i < nb_keypoints; i++)
+    for (size_t i = 0; i < nb_keypoints; i++)
     {
         if (cornerness[i] == 0)
             break;

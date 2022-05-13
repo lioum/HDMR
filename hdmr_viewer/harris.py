@@ -118,7 +118,7 @@ def detect_harris_points(image_gray: np.ndarray, max_keypoints: int=30,
     # ...and their values
     candidate_values = harris_resp[detect_mask]
     #sort candidates
-    sorted_indices = np.argsort(candidate_values)
+    sorted_indices = np.argsort(-candidate_values)
     # keep only the bests
     best_corners_coordinates = candidates_coords[sorted_indices][:max_keypoints]
 
