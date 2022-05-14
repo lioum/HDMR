@@ -3,6 +3,60 @@
 #include "stb_image.h"
 #include "stb_image_write.h"
 
+float gauss[] = {
+    1.02798843e-04, 1.31755659e-03, 6.08748501e-03, 1.01389764e-02,
+    6.08748501e-03, 1.31755659e-03, 1.02798843e-04, 1.31755659e-03,
+    1.68869153e-02, 7.80223366e-02, 1.29949664e-01, 7.80223366e-02,
+    1.68869153e-02, 1.31755659e-03, 6.08748501e-03, 7.80223366e-02,
+    3.60485318e-01, 6.00404295e-01, 3.60485318e-01, 7.80223366e-02,
+    6.08748501e-03, 1.01389764e-02, 1.29949664e-01, 6.00404295e-01,
+    1.00000000e+00, 6.00404295e-01, 1.29949664e-01, 1.01389764e-02,
+    6.08748501e-03, 7.80223366e-02, 3.60485318e-01, 6.00404295e-01,
+    3.60485318e-01, 7.80223366e-02, 6.08748501e-03, 1.31755659e-03,
+    1.68869153e-02, 7.80223366e-02, 1.29949664e-01, 7.80223366e-02,
+    1.68869153e-02, 1.31755659e-03, 1.02798843e-04, 1.31755659e-03,
+    6.08748501e-03, 1.01389764e-02, 6.08748501e-03, 1.31755659e-03,
+    1.02798843e-04
+};
+
+float gauss_dx[] = {
+    3.08396530e-04,  2.63511317e-03,  6.08748501e-03,  0.00000000e+00,
+    -6.08748501e-03, -2.63511317e-03, -3.08396530e-04, 3.95266976e-03,
+    3.37738305e-02,  7.80223366e-02,  0.00000000e+00,  -7.80223366e-02,
+    -3.37738305e-02, -3.95266976e-03, 1.82624550e-02,  1.56044673e-01,
+    3.60485318e-01,  0.00000000e+00,  -3.60485318e-01, -1.56044673e-01,
+    -1.82624550e-02, 3.04169293e-02,  2.59899329e-01,  6.00404295e-01,
+    0.00000000e+00,  -6.00404295e-01, -2.59899329e-01, -3.04169293e-02,
+    1.82624550e-02,  1.56044673e-01,  3.60485318e-01,  0.00000000e+00,
+    -3.60485318e-01, -1.56044673e-01, -1.82624550e-02, 3.95266976e-03,
+    3.37738305e-02,  7.80223366e-02,  0.00000000e+00,  -7.80223366e-02,
+    -3.37738305e-02, -3.95266976e-03, 3.08396530e-04,  2.63511317e-03,
+    6.08748501e-03,  0.00000000e+00,  -6.08748501e-03, -2.63511317e-03,
+    -3.08396530e-04
+};
+
+float gauss_dy[] = {
+    3.08396530e-04,  3.95266976e-03,  1.82624550e-02,  3.04169293e-02,
+    1.82624550e-02,  3.95266976e-03,  3.08396530e-04,  2.63511317e-03,
+    3.37738305e-02,  1.56044673e-01,  2.59899329e-01,  1.56044673e-01,
+    3.37738305e-02,  2.63511317e-03,  6.08748501e-03,  7.80223366e-02,
+    3.60485318e-01,  6.00404295e-01,  3.60485318e-01,  7.80223366e-02,
+    6.08748501e-03,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,
+    0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,
+    -6.08748501e-03, -7.80223366e-02, -3.60485318e-01, -6.00404295e-01,
+    -3.60485318e-01, -7.80223366e-02, -6.08748501e-03, -2.63511317e-03,
+    -3.37738305e-02, -1.56044673e-01, -2.59899329e-01, -1.56044673e-01,
+    -3.37738305e-02, -2.63511317e-03, -3.08396530e-04, -3.95266976e-03,
+    -1.82624550e-02, -3.04169293e-02, -1.82624550e-02, -3.95266976e-03,
+    -3.08396530e-04
+};
+
+const size_t ker_size = 7;
+
+__constant__ float d_gauss[ker_size * ker_size];
+__constant__ float d_gauss_dx[ker_size * ker_size];
+__constant__ float d_gauss_dy[ker_size * ker_size];
+
 __global__ void grayscale(unsigned char *src, float *dst, int height, int width)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -28,52 +82,13 @@ __global__ void multiply_ew(float *lhs, float *rhs, float *dst, int size)
     dst[i] = lhs[i] * rhs[i];
 }
 
-__device__ float gauss_coeff(int ker_x, int ker_y, int ker_radius, float sigma_sqr)
-{
-    return expf(-((ker_x * ker_x + ker_y * ker_y) / (2 * sigma_sqr)));
-}
-
-__global__ void gauss_kernel_init(float *ker, int ker_size, float sigma_sqr)
-{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockDim.y * blockIdx.y + threadIdx.y;
-
-    if (x >= ker_size || y >= ker_size)
-        return;
-
-    int ker_radius = ker_size / 2;
-    int ker_x = x - ker_radius;
-    int ker_y = y - ker_radius;
-
-    ker[y * ker_size + x] = gauss_coeff(ker_x, ker_y, ker_radius, sigma_sqr);
-}
-
-__global__ void gauss_kernel_derivatives_init(float *gx, float *gy, int ker_size, float sigma_sqr)
-{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockDim.y * blockIdx.y + threadIdx.y;
-
-    if (x >= ker_size || y >= ker_size)
-        return;
-
-    int ker_radius = ker_size / 2;
-    int ker_x = x - ker_radius;
-    int ker_y = y - ker_radius;
-
-    gx[y * ker_size + x] =
-        gauss_coeff(ker_x, ker_y, ker_radius, sigma_sqr) * (-ker_x / sigma_sqr);
-    gy[y * ker_size + x] =
-        gauss_coeff(ker_x, ker_y, ker_radius, sigma_sqr) * (-ker_y / sigma_sqr);
-}
-
-__global__ void convolve2D(float *src, float *kernel, float *dst, int height, int width, int mask_size)
+__device__ void convolve2D(float *src, float *kernel, float *dst, int height, int width, int mask_size, float *s_src)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
     if (x >= width || y >= height)
         return;
     
-    extern __shared__ float s_src[];
     s_src[threadIdx.y * blockDim.x + threadIdx.x] = src[y * width + x];
     __syncthreads();
 
@@ -105,6 +120,22 @@ __global__ void convolve2D(float *src, float *kernel, float *dst, int height, in
 
     dst[y * width + x] = Pvalue;
 }
+
+__global__ void convolve_gauss(float *src, float *dst, int height, int width) {
+    extern __shared__ float s_src[];
+    convolve2D(src, d_gauss, dst, height, width, ker_size, s_src);
+}
+
+__global__ void convolve_gauss_dx(float *src, float *dst, int height, int width) {
+    extern __shared__ float s_src[];
+    convolve2D(src, d_gauss_dx, dst, height, width, ker_size, s_src);
+}
+
+__global__ void convolve_gauss_dy(float *src, float *dst, int height, int width) {
+    extern __shared__ float s_src[];
+    convolve2D(src, d_gauss_dy, dst, height, width, ker_size, s_src);
+}
+
 
 __global__ void compute_response(float *Wxx, float *Wyy, float *Wxy, float *dst, int size)
 {
@@ -181,9 +212,9 @@ __global__ void compute_coords(int *sorted_indices, int *d_x_coords, int *d_y_co
 }
 
 void compute_harris_response(const unsigned char *img_rgb, float *d_harris_response, int width,
-                          int height, size_t derivative_ker_size,
-                          size_t opening_size)
+                          int height)
 {
+
     size_t size = width * height;
     
     unsigned char *d_img_rgb; 
@@ -193,6 +224,10 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
 
     cudaMemcpy(d_img_rgb, img_rgb, 3 * size * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
+    cudaMemcpyToSymbol(d_gauss, gauss, ker_size * ker_size * sizeof(float), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(d_gauss_dx, gauss_dx, ker_size * ker_size * sizeof(float), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(d_gauss_dy, gauss_dy, ker_size * ker_size * sizeof(float), 0, cudaMemcpyHostToDevice);
+
     dim3 threads(32,32);
     dim3 blocks((width+threads.x-1)/threads.x,
                 (height+threads.y-1)/threads.y);
@@ -201,13 +236,7 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
     grayscale<<<blocks, threads>>>(d_img_rgb, d_img_gray, height, width);
     cudaDeviceSynchronize();
 
-    float *d_g, *d_gx, *d_gy, *d_imx, *d_imy, *d_Wxx, *d_Wyy, *d_Wxy, *d_response;
-    size_t x_opening_size = 2 * opening_size + 1; 
-    size_t x_derivative_ker_size = 2 * derivative_ker_size + 1;
-
-    cudaMalloc(&d_g, x_opening_size * x_opening_size * sizeof(float));
-    cudaMalloc(&d_gx, x_derivative_ker_size * x_derivative_ker_size * sizeof(float));
-    cudaMalloc(&d_gy, x_derivative_ker_size * x_derivative_ker_size * sizeof(float));
+    float *d_imx, *d_imy, *d_Wxx, *d_Wyy, *d_Wxy, *d_response;
 
     cudaMalloc(&d_imx, size * sizeof(float));
     cudaMalloc(&d_imy, size * sizeof(float));
@@ -218,25 +247,10 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
 
     cudaMalloc(&d_response, size * sizeof(float));
 
-    dim3 blocks_opening((x_opening_size + threads.x - 1) / threads.x,
-                        (x_opening_size + threads.y - 1) / threads.y);
-    dim3 blocks_derivative_ker(
-        (x_derivative_ker_size + threads.x - 1) / threads.x,
-        (x_derivative_ker_size + threads.y - 1) / threads.y);
-
-    float opening_sigma_sqr = (opening_size * opening_size) / 9.0;
-    float derivative_sigma_sqr =
-        (derivative_ker_size * derivative_ker_size) / 9.0;
-
-    gauss_kernel_init<<<blocks_opening, threads>>>(d_g, x_opening_size,
-                                                   opening_sigma_sqr);
-    gauss_kernel_derivatives_init<<<blocks_derivative_ker, threads>>>(
-        d_gx, d_gy, x_derivative_ker_size, derivative_sigma_sqr);
-
     cudaDeviceSynchronize();
 
-    convolve2D<<<blocks,threads,shared_size>>>(d_img_gray, d_gx, d_imx, height, width, x_derivative_ker_size);
-    convolve2D<<<blocks,threads,shared_size>>>(d_img_gray, d_gy, d_imy, height, width, x_derivative_ker_size);
+    convolve_gauss_dx<<<blocks,threads, shared_size>>>(d_img_gray, d_imx, height, width);
+    convolve_gauss_dy<<<blocks,threads, shared_size>>>(d_img_gray, d_imy, height, width);
 
     cudaDeviceSynchronize();
 
@@ -256,9 +270,9 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
     cudaFree(d_imx);
     cudaFree(d_imy);
 
-    convolve2D<<<blocks,threads,shared_size>>>(d_imx2, d_g, d_Wxx, height, width, x_derivative_ker_size);
-    convolve2D<<<blocks,threads,shared_size>>>(d_imy2, d_g, d_Wyy, height, width, x_derivative_ker_size);
-    convolve2D<<<blocks,threads,shared_size>>>(d_imxy, d_g, d_Wxy, height, width, x_derivative_ker_size);
+    convolve_gauss<<<blocks,threads, shared_size>>>(d_imx2, d_Wxx, height, width);
+    convolve_gauss<<<blocks,threads, shared_size>>>(d_imy2, d_Wyy, height, width);
+    convolve_gauss<<<blocks,threads, shared_size>>>(d_imxy, d_Wxy, height, width);
 
     cudaDeviceSynchronize();
 
@@ -269,10 +283,6 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
 
     cudaFree(d_img_gray);
     cudaFree(d_img_rgb);
-
-    cudaFree(d_g);
-    cudaFree(d_gx);
-    cudaFree(d_gy);
 
     cudaFree(d_imx2);
     cudaFree(d_imy2);
@@ -285,20 +295,20 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
 
 void detect_harris_points(const unsigned char *img_rgb, int *x_coords,
                           int *y_coords, float *cornerness, float threshold,
-                          int width, int height, size_t derivative_ker_size,
-                          size_t opening_size, size_t nb_keypoints)
+                          int width, int height, size_t nb_keypoints)
 {
     size_t size = width * height;
     dim3 threads(32,32);
     int nb_threads = threads.x * threads.y;
     dim3 blocks((width+threads.x-1)/threads.x,
                 (height+threads.y-1)/threads.y);   
+    
+    
 
     float *d_harris_response;
     cudaMalloc(&d_harris_response, size * sizeof(float));
 
-    compute_harris_response(img_rgb, d_harris_response, width, height,
-                            derivative_ker_size, opening_size);
+    compute_harris_response(img_rgb, d_harris_response, width, height);
 
     float *d_min_coef, *d_max_coef;
     cudaMalloc(&d_min_coef, sizeof(float));
@@ -394,8 +404,7 @@ int main(int argc, char *argv[])
     int *y_coords = new int[nb_keypoints];
     float *cornerness = new float[nb_keypoints];
 
-    detect_harris_points(img, x_coords, y_coords, cornerness, 0.1, width, height,
-                         3, 3, nb_keypoints);
+    detect_harris_points(img, x_coords, y_coords, cornerness, 0.1, width, height, nb_keypoints);
 
     stbi_image_free(img);
 
