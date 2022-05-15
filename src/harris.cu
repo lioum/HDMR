@@ -91,37 +91,39 @@ __device__ void convolve2D(float *src, float *kernel, float *dst, int height,
                            int width, int mask_size, float *s_src, int spitch,
                            int dpitch)
 {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockDim.y * blockIdx.y + threadIdx.y;
+    int block_x = blockIdx.x * blockDim.x;
+    int block_y = blockIdx.y * blockDim.y;
+
+    int x = block_x + threadIdx.x;
+    int y = block_y + threadIdx.y;
     if (x >= width || y >= height)
         return;
     
-    s_src[threadIdx.y * blockDim.x + threadIdx.x] = src[y * spitch + x];
+    size_t tile_w = blockDim.x + mask_size - 1;
+    size_t tile_h = blockDim.y + mask_size - 1;
+    int half_size = mask_size / 2;
+    for (int y = threadIdx.y; y < tile_h; y += blockDim.y)
+    {
+        for (int x = threadIdx.x; x < tile_w; x += blockDim.x)
+        {
+            int u = x + block_x - half_size;
+            int v = y + block_y - half_size;
+            if (u < 0 || u >= width || v < 0 || v >= height)
+                s_src[y * tile_w + x] = 0; 
+            else
+                s_src[y * tile_w + x] = src[v * spitch + u];
+        }
+    }
     __syncthreads();
 
-    int x_min = blockIdx.x * blockDim.x;
-    int x_max = (blockIdx.x + 1) * blockDim.x;
-    int y_min = blockIdx.y * blockDim.y;
-    int y_max = (blockIdx.y + 1) * blockDim.y;
-
     float Pvalue = 0;
-    int half_size = mask_size / 2;
     for (int k = 0; k < mask_size; k++)
     {
         for (int j = 0; j < mask_size; j++)
         {
-            int u = x - (j - half_size), v = y - (k - half_size);
-            
-            if (u < 0 || u >= width || v < 0 || v >= height)
-                continue;
-
-            if (u < x_min || u >= x_max || v < y_min || v >= y_max)
-                Pvalue += src[v * spitch + u] * kernel[k * mask_size + j];
-            else
-            {
-                u = threadIdx.x - (j - half_size), v = threadIdx.y - (k - half_size);
-                Pvalue += s_src[v * blockDim.x + u] * kernel[k * mask_size + j];                
-            }
+            int u = threadIdx.x + 2 * half_size - j;
+            int v = threadIdx.y + 2 * half_size - k;
+            Pvalue += s_src[v * tile_w + u] * kernel[k * mask_size + j];                
         }
     }
 
@@ -254,7 +256,9 @@ void compute_harris_response(const unsigned char *img_rgb, float *d_harris_respo
     dim3 threads(32,32);
     dim3 blocks((width+threads.x-1)/threads.x,
                 (height+threads.y-1)/threads.y);
-    size_t shared_size = threads.x * threads.y * sizeof(float);
+    size_t padding = ker_size - 1;
+    size_t shared_size =
+        (threads.x + padding) * (threads.y + padding) * sizeof(float);
 
     grayscale<<<blocks, threads>>>(d_img_rgb, d_img_gray, height, width, img_rgb_pitch, img_gray_pitch / sizeof(float));
 
