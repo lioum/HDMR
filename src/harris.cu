@@ -57,7 +57,24 @@ __constant__ float d_gauss[ker_size * ker_size];
 __constant__ float d_gauss_dx[ker_size * ker_size];
 __constant__ float d_gauss_dy[ker_size * ker_size];
 
-__global__ void grayscale(unsigned char *src, float *dst, int height, int width)
+__global__ void grayscale(unsigned char *src, float *dst, int height, int width, int spitch, int dpitch)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (x >= width || y >= height)
+        return;
+    
+
+    float r = src[y * spitch + 3 * x];
+    float g = src[y * spitch + 3 * x + 1];
+    float b = src[y * spitch + 3 * x + 2];
+
+    dst[y * dpitch + x] = 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+__global__ void multiply_ew(float *lhs, float *rhs, float *dst, int height,
+                            int width, int spitch, int dpitch)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -65,31 +82,21 @@ __global__ void grayscale(unsigned char *src, float *dst, int height, int width)
     if (x >= width || y >= height)
         return;
 
-    float r = src[y * 3 * width + 3 * x];
-    float g = src[y * 3 * width + 3 * x + 1];
-    float b = src[y * 3 * width + 3 * x + 2];
+    int si = y * spitch + x;
 
-    dst[y * width + x] = 0.299 * r + 0.587 * g + 0.114 * b;
+    dst[y * dpitch + x] = lhs[si] * rhs[si];
 }
 
-__global__ void multiply_ew(float *lhs, float *rhs, float *dst, int size)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (i >= size)
-        return;
-
-    dst[i] = lhs[i] * rhs[i];
-}
-
-__device__ void convolve2D(float *src, float *kernel, float *dst, int height, int width, int mask_size, float *s_src)
+__device__ void convolve2D(float *src, float *kernel, float *dst, int height,
+                           int width, int mask_size, float *s_src, int spitch,
+                           int dpitch)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
     if (x >= width || y >= height)
         return;
     
-    s_src[threadIdx.y * blockDim.x + threadIdx.x] = src[y * width + x];
+    s_src[threadIdx.y * blockDim.x + threadIdx.x] = src[y * spitch + x];
     __syncthreads();
 
     int x_min = blockIdx.x * blockDim.x;
@@ -109,7 +116,7 @@ __device__ void convolve2D(float *src, float *kernel, float *dst, int height, in
                 continue;
 
             if (u < x_min || u >= x_max || v < y_min || v >= y_max)
-                Pvalue += src[v * width + u] * kernel[k * mask_size + j];
+                Pvalue += src[v * spitch + u] * kernel[k * mask_size + j];
             else
             {
                 u = threadIdx.x - (j - half_size), v = threadIdx.y - (k - half_size);
@@ -118,47 +125,60 @@ __device__ void convolve2D(float *src, float *kernel, float *dst, int height, in
         }
     }
 
-    dst[y * width + x] = Pvalue;
+    dst[y * dpitch + x] = Pvalue;
 }
 
-__global__ void convolve_gauss(float *src, float *dst, int height, int width) {
-    extern __shared__ float s_src[];
-    convolve2D(src, d_gauss, dst, height, width, ker_size, s_src);
-}
-
-__global__ void convolve_gauss_dx(float *src, float *dst, int height, int width) {
-    extern __shared__ float s_src[];
-    convolve2D(src, d_gauss_dx, dst, height, width, ker_size, s_src);
-}
-
-__global__ void convolve_gauss_dy(float *src, float *dst, int height, int width) {
-    extern __shared__ float s_src[];
-    convolve2D(src, d_gauss_dy, dst, height, width, ker_size, s_src);
-}
-
-
-__global__ void compute_response(float *Wxx, float *Wyy, float *Wxy, float *dst, int size)
+__global__ void convolve_gauss(float *src, float *dst, int height, int width,
+                               int spitch, int dpitch)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    extern __shared__ float s_src[];
+    convolve2D(src, d_gauss, dst, height, width, ker_size, s_src, spitch, dpitch);
+}
 
-    if (i >= size)
+__global__ void convolve_gauss_dx(float *src, float *dst, int height, int width,
+                                  int spitch, int dpitch)
+{
+    extern __shared__ float s_src[];
+    convolve2D(src, d_gauss_dx, dst, height, width, ker_size, s_src, spitch, dpitch);
+}
+
+__global__ void convolve_gauss_dy(float *src, float *dst, int height, int width,
+                                  int spitch, int dpitch)
+{
+    extern __shared__ float s_src[];
+    convolve2D(src, d_gauss_dy, dst, height, width, ker_size, s_src, spitch, dpitch);
+}
+
+__global__ void compute_response(float *Wxx, float *Wyy, float *Wxy, float *dst,
+                                 int height, int width, int spitch, int dpitch)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (x >= width || y >= height)
         return;
+    
+    int i = y * spitch + x;
 
     float Wdet = Wxx[i] * Wyy[i] - Wxy[i] * Wxy[i];
     float Wtr = Wxx[i] + Wyy[i];
 
-    dst[i] = Wdet / (Wtr + 1);
+    dst[y * dpitch + x] = Wdet / (Wtr + 1);
 }
 
 __global__ void thresh_harris(float *d_harris_response, float *d_min_coef,
-                              float *d_max_coef, float threshold, size_t size)
+                              float *d_max_coef, float threshold, size_t height,
+                              size_t width, int pitch)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
-    if (x < 0 || x >= size)
+    int y = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (x >= width || y >= height)
         return;
 
-    d_harris_response[x] = d_harris_response[x] * (d_harris_response[x]
-        > (*d_min_coef + threshold * (*d_max_coef - *d_min_coef)));
+    d_harris_response[y * pitch + x] = d_harris_response[y * pitch + x]
+        * (d_harris_response[y * pitch + x]
+           > (*d_min_coef + threshold * (*d_max_coef - *d_min_coef)));
 }
 
 __global__ void init_indices(int *d_indices, size_t size)
@@ -175,7 +195,7 @@ __device__ bool is_close(double a, double b, double rtol = 1e-5, double atol = 1
     return abs(a - b) <= (atol + rtol * abs(b));
 }
 
-__global__ void get_local_maximums(float *mat, float *dst, int height, int width)
+__global__ void get_local_maximums(float *mat, float *dst, int height, int width, int pitch)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -193,11 +213,12 @@ __global__ void get_local_maximums(float *mat, float *dst, int height, int width
     {
         for (int j = block_j; j < block_j + block_w; j++)
         {
-            if (max <= mat[i * width + j])
-                max = mat[i * width + j];
+            if (max <= mat[i * pitch + j])
+                max = mat[i * pitch + j];
         }
     }
-    dst[y * width + x] = max * is_close(mat[y * width + x], max);
+
+    dst[y * width + x] = max * is_close(mat[y * pitch + x], max);
 }
 
 __global__ void compute_coords(int *sorted_indices, int *d_x_coords, int *d_y_coords, int width, size_t nb_keypoints)
@@ -212,72 +233,90 @@ __global__ void compute_coords(int *sorted_indices, int *d_x_coords, int *d_y_co
 }
 
 void compute_harris_response(const unsigned char *img_rgb, float *d_harris_response, int width,
-                          int height)
+                          int height, size_t harris_pitch)
 {
-
-    size_t size = width * height;
-    
     unsigned char *d_img_rgb; 
-    cudaMalloc(&d_img_rgb, 3 * size * sizeof(unsigned char));
+    size_t img_rgb_pitch, img_gray_pitch;
+    cudaMallocPitch(&d_img_rgb, &img_rgb_pitch, 3 * width * sizeof(unsigned char), height);
     float *d_img_gray;        
-    cudaMalloc(&d_img_gray, size * sizeof(float));
+    cudaMallocPitch(&d_img_gray, &img_gray_pitch, width * sizeof(float), height);
 
-    cudaMemcpy(d_img_rgb, img_rgb, 3 * size * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
-    cudaMemcpyToSymbol(d_gauss, gauss, ker_size * ker_size * sizeof(float), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_gauss_dx, gauss_dx, ker_size * ker_size * sizeof(float), 0, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_gauss_dy, gauss_dy, ker_size * ker_size * sizeof(float), 0, cudaMemcpyHostToDevice);
+    cudaMemcpy2D(
+        d_img_rgb, img_rgb_pitch, img_rgb, 3 * width * sizeof(unsigned char),
+        3 * width * sizeof(unsigned char), height, cudaMemcpyHostToDevice);
+    
+    
+    cudaMemcpyToSymbol(d_gauss, gauss, sizeof(gauss), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(d_gauss_dx, gauss_dx, sizeof(gauss_dx), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(d_gauss_dy, gauss_dy, sizeof(gauss_dy), 0, cudaMemcpyHostToDevice);
 
     dim3 threads(32,32);
     dim3 blocks((width+threads.x-1)/threads.x,
                 (height+threads.y-1)/threads.y);
     size_t shared_size = threads.x * threads.y * sizeof(float);
 
-    grayscale<<<blocks, threads>>>(d_img_rgb, d_img_gray, height, width);
-    cudaDeviceSynchronize();
-
-    float *d_imx, *d_imy, *d_Wxx, *d_Wyy, *d_Wxy, *d_response;
-
-    cudaMalloc(&d_imx, size * sizeof(float));
-    cudaMalloc(&d_imy, size * sizeof(float));
-
-    cudaMalloc(&d_Wxx, size * sizeof(float));
-    cudaMalloc(&d_Wyy, size * sizeof(float));
-    cudaMalloc(&d_Wxy, size * sizeof(float));
-
-    cudaMalloc(&d_response, size * sizeof(float));
+    grayscale<<<blocks, threads>>>(d_img_rgb, d_img_gray, height, width, img_rgb_pitch, img_gray_pitch / sizeof(float));
 
     cudaDeviceSynchronize();
 
-    convolve_gauss_dx<<<blocks,threads, shared_size>>>(d_img_gray, d_imx, height, width);
-    convolve_gauss_dy<<<blocks,threads, shared_size>>>(d_img_gray, d_imy, height, width);
+    float *d_imx, *d_imy, *d_Wxx, *d_Wyy, *d_Wxy;
+    size_t imx_pitch, imy_pitch, Wxx_pitch, Wyy_pitch, Wxy_pitch;
+
+    cudaMallocPitch(&d_imx, &imx_pitch, width * sizeof(float), height);
+    cudaMallocPitch(&d_imy, &imy_pitch, width * sizeof(float), height);
+
+    cudaMallocPitch(&d_Wxx, &Wxx_pitch, width * sizeof(float), height);
+    cudaMallocPitch(&d_Wyy, &Wyy_pitch, width * sizeof(float), height);
+    cudaMallocPitch(&d_Wxy, &Wxy_pitch, width * sizeof(float), height);
+
+    cudaDeviceSynchronize();
+
+    convolve_gauss_dx<<<blocks, threads, shared_size>>>(
+        d_img_gray, d_imx, height, width, img_gray_pitch / sizeof(float),
+        imx_pitch / sizeof(float));
+    convolve_gauss_dy<<<blocks, threads, shared_size>>>(
+        d_img_gray, d_imy, height, width, img_gray_pitch / sizeof(float),
+        imy_pitch / sizeof(float));
 
     cudaDeviceSynchronize();
 
     float *d_imx2, *d_imy2, *d_imxy;
-    cudaMalloc(&d_imx2, size * sizeof(float));
-    cudaMalloc(&d_imy2, size * sizeof(float));
-    cudaMalloc(&d_imxy, size * sizeof(float));
+    size_t imx2_pitch, imy2_pitch, imxy_pitch;
+    cudaMallocPitch(&d_imx2, &imx2_pitch, width * sizeof(float), height);
+    cudaMallocPitch(&d_imy2, &imy2_pitch, width * sizeof(float), height);
+    cudaMallocPitch(&d_imxy, &imxy_pitch, width * sizeof(float), height);
 
-    int nb_threads = threads.x * threads.y;
-
-    multiply_ew<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(d_imx, d_imx, d_imx2, size);
-    multiply_ew<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(d_imy, d_imy, d_imy2, size);
-    multiply_ew<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(d_imx, d_imy, d_imxy, size);
+    multiply_ew<<<blocks, threads, shared_size>>>(
+        d_imx, d_imx, d_imx2, height, width, imx_pitch / sizeof(float),
+        imx2_pitch / sizeof(float));
+    multiply_ew<<<blocks, threads, shared_size>>>(
+        d_imy, d_imy, d_imy2, height, width, imx_pitch / sizeof(float),
+        imy2_pitch / sizeof(float));
+    multiply_ew<<<blocks, threads, shared_size>>>(
+        d_imx, d_imy, d_imxy, height, width, imx_pitch / sizeof(float),
+        imxy_pitch / sizeof(float));
 
     cudaDeviceSynchronize();
 
     cudaFree(d_imx);
     cudaFree(d_imy);
 
-    convolve_gauss<<<blocks,threads, shared_size>>>(d_imx2, d_Wxx, height, width);
-    convolve_gauss<<<blocks,threads, shared_size>>>(d_imy2, d_Wyy, height, width);
-    convolve_gauss<<<blocks,threads, shared_size>>>(d_imxy, d_Wxy, height, width);
+    convolve_gauss<<<blocks, threads, shared_size>>>(
+        d_imx2, d_Wxx, height, width, imx2_pitch / sizeof(float),
+        Wxx_pitch / sizeof(float));
+    convolve_gauss<<<blocks, threads, shared_size>>>(
+        d_imy2, d_Wyy, height, width, imy2_pitch / sizeof(float),
+        Wyy_pitch / sizeof(float));
+    convolve_gauss<<<blocks, threads, shared_size>>>(
+        d_imxy, d_Wxy, height, width, imxy_pitch / sizeof(float),
+        Wxy_pitch / sizeof(float));
 
     cudaDeviceSynchronize();
 
-    compute_response<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(
-        d_Wxx, d_Wyy, d_Wxy, d_harris_response, size);
+    compute_response<<<blocks, threads>>>(
+        d_Wxx, d_Wyy, d_Wxy, d_harris_response, height, width,
+        Wxx_pitch / sizeof(float), harris_pitch / sizeof(float));
 
     cudaDeviceSynchronize();
 
@@ -302,13 +341,17 @@ void detect_harris_points(const unsigned char *img_rgb, int *x_coords,
     int nb_threads = threads.x * threads.y;
     dim3 blocks((width+threads.x-1)/threads.x,
                 (height+threads.y-1)/threads.y);   
-    
-    
 
-    float *d_harris_response;
-    cudaMalloc(&d_harris_response, size * sizeof(float));
+    float *d_harris_response, *d_harris_unpitched;
+    size_t harris_pitch;
+    cudaMalloc(&d_harris_unpitched, size * sizeof(float));
+    cudaMallocPitch(&d_harris_response, &harris_pitch, width * sizeof(float), height);
 
-    compute_harris_response(img_rgb, d_harris_response, width, height);
+    compute_harris_response(img_rgb, d_harris_response, width, height, harris_pitch);
+    
+    cudaMemcpy2D(d_harris_unpitched, width * sizeof(float), d_harris_response,
+                 harris_pitch, width * sizeof(float), height,
+                 cudaMemcpyDeviceToDevice);
 
     float *d_min_coef, *d_max_coef;
     cudaMalloc(&d_min_coef, sizeof(float));
@@ -317,24 +360,25 @@ void detect_harris_points(const unsigned char *img_rgb, int *x_coords,
     void     *d_temp_storage = NULL;
     size_t   temp_storage_bytes = 0; 
     cub::DeviceReduce::Min(d_temp_storage, temp_storage_bytes,
-                           d_harris_response, d_min_coef, size);
+                           d_harris_unpitched, d_min_coef, size);
     cudaMalloc(&d_temp_storage, temp_storage_bytes);
     cub::DeviceReduce::Min(d_temp_storage, temp_storage_bytes,
-                           d_harris_response, d_min_coef, size);
+                           d_harris_unpitched, d_min_coef, size);
     
     d_temp_storage = NULL;
     temp_storage_bytes = 0;
     cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes,
-                           d_harris_response, d_max_coef, size);
+                           d_harris_unpitched, d_max_coef, size);
     cudaMalloc(&d_temp_storage, temp_storage_bytes);
     cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes,
-                           d_harris_response, d_max_coef, size);
+                           d_harris_unpitched, d_max_coef, size);
 
     cudaDeviceSynchronize();
 
-    thresh_harris<<<(nb_threads + size - 1) / nb_threads, nb_threads>>>(
-        d_harris_response, d_min_coef, d_max_coef, threshold, size);
-    
+    thresh_harris<<<blocks, threads>>>(d_harris_response, d_min_coef,
+                                       d_max_coef, threshold, height, width,
+                                       harris_pitch / sizeof(float));
+
     cudaDeviceSynchronize();
  
     int *d_indices, *d_sorted_indices;
@@ -346,12 +390,14 @@ void detect_harris_points(const unsigned char *img_rgb, int *x_coords,
     cudaMalloc(&d_local_maxs, size * sizeof(float));
     cudaMalloc(&d_sorted_maxs, size * sizeof(float));
 
-    get_local_maximums<<<blocks, threads>>>(d_harris_response, d_local_maxs, height, width);
+    get_local_maximums<<<blocks, threads>>>(d_harris_response, d_local_maxs,
+                                            height, width, harris_pitch / sizeof(float));
 
     cudaDeviceSynchronize();
     cudaFree(d_harris_response);
     cudaFree(d_min_coef);
     cudaFree(d_max_coef);
+    cudaFree(d_harris_unpitched);
 
     d_temp_storage = NULL;
     temp_storage_bytes = 0;
