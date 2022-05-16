@@ -520,7 +520,7 @@ int main(int argc, char *argv[])
         {
             if (cornerness[i] == 0)
                 break;
-            std::cout << y_coords[i] << ", " << x_coords[i] << std::endl;
+            std::cout << y_coords[i] << "," << x_coords[i] << "," << cornerness[i] << std::endl;
         }
     }
     else {

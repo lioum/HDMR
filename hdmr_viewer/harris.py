@@ -103,8 +103,7 @@ def detect_harris_points(image_gray: np.ndarray, max_keypoints: int=30,
     # 2. Filtering
     # 2.0 Mask init: all our filtering is performed using a mask
     detect_mask = np.ones(harris_resp.shape, dtype=bool)
-    # 2.1 Background and border removal
-    detect_mask &= bubble2maskeroded(image_gray, border=min_distance)
+
     # 2.2 Response threshold
     h_min = harris_resp.min()
     detect_mask &= harris_resp > h_min + threshold*(harris_resp.max() - h_min)

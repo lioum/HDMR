@@ -24,15 +24,16 @@ def main():
 
     img = cv.cvtColor(cv.imread(img_path), cv.COLOR_BGR2RGB)
 
-    cpu = run_binary("build/hdmr_cpu", img_path)
-    gpu = run_binary("build/hdmr_gpu", img_path)
+    cpu = run_binary("release/hdmr_cpu", img_path)
+    gpu = run_binary("release/hdmr_gpu", img_path)
 
     py = detect_harris_points(cv.cvtColor(img, cv.COLOR_RGB2GRAY), threshold=0.01, max_keypoints=nb_points)
-    
+
     plt.imshow(img)
-    plt.scatter(py[:nb_points,1], py[:nb_points, 0], s=6, c='red', zorder=1)
-    plt.scatter(cpu[:nb_points, 1], cpu[:nb_points, 0], s=6, c='cyan', zorder=3)
-    plt.scatter(gpu[:nb_points, 1], gpu[:nb_points, 0], s=6, c='pink', zorder=2)
+    plt.scatter(py[:nb_points,1], py[:nb_points, 0], s=6, c='red', zorder=1, label='python')
+    plt.scatter(cpu[:nb_points, 1], cpu[:nb_points, 0], s=6, c='cyan', zorder=2, label='cpu')
+    plt.scatter(gpu[:nb_points, 1], gpu[:nb_points, 0], s=6, c='pink', zorder=3, label='gpu')
+    plt.legend()
     plt.show()
 
 if __name__ == "__main__":
