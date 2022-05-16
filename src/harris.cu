@@ -441,6 +441,65 @@ void detect_harris_points(const unsigned char *img_rgb, int *x_coords,
     cudaFree(d_temp_storage);
 }
 
+__global__ void mark_points(unsigned char *img_rgb, int *x_coords,
+                            int *y_coords, int height, int width,
+                            int coords_size, int mask_size, int img_pitch)
+{
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int k = blockDim.y * blockIdx.y + threadIdx.y;
+    int j = blockDim.z * blockIdx.z + threadIdx.z;
+    
+    if (i >= coords_size)
+        return;
+    
+    int y = y_coords[i];
+    int x = x_coords[i];
+
+    int half_size = mask_size / 2;
+    int u = x - (j - half_size), v = y - (k - half_size);
+
+    if (u < 0 || u >= width || v < 0 || v >= height)
+        return;
+    
+    img_rgb[v * img_pitch + 3 * u] = 0;
+    img_rgb[v * img_pitch + 3 * u + 1] = 0;
+    img_rgb[v * img_pitch + 3 * u + 2] = 255;
+}
+
+void color_image(unsigned char *img_rgb, int *x_coords, int *y_coords, int height, int width, int coords_size) {
+    
+    unsigned char *d_img_rgb;
+    size_t img_pitch;
+    int *d_x_coords, *d_y_coords;
+    
+    cudaMallocPitch(&d_img_rgb, &img_pitch, 3 * width * sizeof(unsigned char), height);
+    cudaMalloc(&d_x_coords, coords_size * sizeof(int));
+    cudaMalloc(&d_y_coords, coords_size * sizeof(int));
+
+    cudaMemcpy2D(
+        d_img_rgb, img_pitch, img_rgb, 3 * width * sizeof(unsigned char),
+        3 * width * sizeof(unsigned char), height, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x_coords, x_coords, coords_size * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y_coords, y_coords, coords_size * sizeof(int), cudaMemcpyHostToDevice);
+    
+    int mask_size = 3;
+    
+    dim3 threads(1024 / (mask_size * mask_size), mask_size, mask_size);
+    dim3 blocks((coords_size + threads.x - 1) / threads.x, 1, 1);
+
+    mark_points<<<blocks, threads>>>(d_img_rgb, d_x_coords, d_y_coords, height,
+                                     width, coords_size, mask_size, img_pitch);
+
+    cudaMemcpy2D(img_rgb, 3 * width * sizeof(unsigned char), d_img_rgb,
+                 img_pitch, 3 * width * sizeof(unsigned char), height,
+                 cudaMemcpyDeviceToHost);
+    
+    cudaFree(d_img_rgb);
+    cudaFree(d_x_coords);
+    cudaFree(d_y_coords);
+}
+
 int main(int argc, char *argv[])
 {
     if (argc <= 1)
@@ -454,17 +513,24 @@ int main(int argc, char *argv[])
     int *y_coords = new int[nb_keypoints];
     float *cornerness = new float[nb_keypoints];
 
-    detect_harris_points(img, x_coords, y_coords, cornerness, 0.1, width, height, nb_keypoints);
+    detect_harris_points(img, x_coords, y_coords, cornerness, 0.01, width, height, nb_keypoints);
 
-    stbi_image_free(img);
-
-    for (size_t i = 0; i < nb_keypoints; i++)
-    {
-        if (cornerness[i] == 0)
-            break;
-        std::cout << y_coords[i] << ", " << x_coords[i] << std::endl;
+    if (argc == 2) {
+        for (size_t i = 0; i < nb_keypoints; i++)
+        {
+            if (cornerness[i] == 0)
+                break;
+            std::cout << y_coords[i] << ", " << x_coords[i] << std::endl;
+        }
+    }
+    else {
+        auto nb_points = std::find(cornerness, cornerness + nb_keypoints, 0.0) - cornerness;
+        color_image(img, x_coords, y_coords, height, width, nb_points);
+        stbi_write_jpg(argv[2], width, height, 3, img, 60);
     }
     
+    stbi_image_free(img);
+
     delete[] x_coords;
     delete[] y_coords;
     delete[] cornerness;
