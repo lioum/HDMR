@@ -18,7 +18,7 @@ def main():
 
     img_path = sys.argv[1]
 
-    nb_points = 25
+    nb_points = 2000
     if len(sys.argv) > 2:
         nb_points = int(sys.argv[2]) or nb_points
 
@@ -30,7 +30,7 @@ def main():
     py = detect_harris_points(cv.cvtColor(img, cv.COLOR_RGB2GRAY), threshold=0.01, max_keypoints=nb_points)
 
     plt.imshow(img)
-    plt.scatter(py[:nb_points,1], py[:nb_points, 0], s=6, c='red', zorder=1, label='python')
+    plt.scatter(py[:nb_points,1], py[:nb_points, 0], s=6, c='green', zorder=1, label='python')
     plt.scatter(cpu[:nb_points, 1], cpu[:nb_points, 0], s=6, c='cyan', zorder=2, label='cpu')
     plt.scatter(gpu[:nb_points, 1], gpu[:nb_points, 0], s=6, c='pink', zorder=3, label='gpu')
     plt.legend()

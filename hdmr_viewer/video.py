@@ -36,7 +36,9 @@ def main():
 
     shutil.rmtree(in_dir, ignore_errors=True)
     shutil.rmtree(out_dir, ignore_errors=True)
-    os.remove("out.mp4")
+
+    if os.path.exists("out.mp4"):
+        os.remove("out.mp4")
 
     in_dir.mkdir()
     out_dir.mkdir()
